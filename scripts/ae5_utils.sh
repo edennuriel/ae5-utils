@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-unset ME MYFILE MYDIR
 shopt -s extglob
-
 MYDIR="$(cd "$(dirname ${BASH_SOURCE[0]})" >/dev/null 2>&1 && pwd)"
 MYFILE=$(basename "${BASH_SOURCE[0]}")
-ME=$MYDIR/$MYFILE
+AE5_UTILS=$MYDIR/$MYFILE
+
 echo sourcing require.sh
 [[ -f ./require.sh ]] && source ./require.sh
 [[ $? -ne 0 ]] && echo could not source ./require.sh exiting && exit
@@ -348,14 +347,12 @@ parse_parm() {
    echo $i
  done
 }
-eaeutils() {
-  vi $ME
-  source $ME
+
+ae5_utils() {
+  [[ $1 == "-h" ]] && egrep '^\w+\(\)\s+{' $AE5_UTILS | sed 's/[\(\)\{]//g' | awk -F# '{printf "%-25s : %s\n",$1,$2}'
+  [[ $1 == "-e" ]] && vi $AE5_UTILS && source $AE5_UTILS 
 }
 
-aeutils() {
- egrep '^\w+\(\)\s+{' $ME | sed 's/[\(\)\{]//g' | awk -F# '{printf "%-25s : %s\n",$1,$2}'
-}
 
 alias f="declare -f"
 alias fn="declare -F"

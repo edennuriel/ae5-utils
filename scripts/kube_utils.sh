@@ -1,8 +1,5 @@
 kcomp() { #activate complitions for kubectl
  source <(kubectl completion bash)
- # [[ -n $KUBECONFIG ]] && return
- # [[ ! -f ~/.kube/config ]] && cp $KUBECONFIG ~/.kube/config
- # unset KUBECONFIG
 }
 
 kubectl() {
