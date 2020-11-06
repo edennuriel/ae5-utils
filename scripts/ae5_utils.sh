@@ -750,5 +750,25 @@ id2name() {
   psql anaconda_storage "select name from projects where id='$id';"
 }
 
+dpods() { # dynamic pods - i.e. session and deployments
+  kubectl get pods  | egrep 'a-app|session'
+}
+label_pods() { # if pods do not have app.kubernetes.io/name find their id (different for app and sess) and call lable_pod
+  for pod in $(kubectl get pods | egrep 'a-app|-session-' | awk '{ print $1}'); do
+    url=$(kubectl get pod $pod -o json | jq -r '.metadata.annotations["anaconda-project-url"] + .metadata.annotations["anaconda-source"]')
+    id=$(echo $url | cut -d/ -f9)
+    [[ ! $(kubectl label pod $pod --list | grep 'app.kubernetes.io/name') ]] && label_pod $pod $id
+  done
+}
+
+label_pod() { # get the project name using ae5 tools and attach it to the pod
+       pod=${1:-""}
+       id=${2:-""}
+       [[ -z $pod || -z $id ]] && return 1
+       echo updating $pod with id $id
+       project=$(ae5 project list --filter id=*${id} --columns name --no-header 2>/dev/null)
+       kubectl label pod $pod app.kubernetes.io/name=$project
+}
+
 [[ $SHELL =~ bash ]] && source <(kubectl completion bash)
 
