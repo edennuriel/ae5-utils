@@ -1,18 +1,30 @@
 #!/bin/bash
-set -xue
+# set -xue
+set -xu
+shopt -s extglob
 
 echo=""
-[[ -f ~/scripts/require.sh ]] && source  ~/scripts/require.sh
 
-RES=${RES:=""}
-ROOTCA="${RES}rootca.crt"  # this file is required for proper creation of trust CA
-FQDN=${FQDN:-""}
+CERTS_SH_DIR="$(cd "$(dirname ${BASH_SOURCE[0]})" >/dev/null 2>&1 && pwd)"
+CERTS_SH_FILE=$(basename "${BASH_SOURCE[0]}")
+CERTS_SH=$CERTS_SH_DIR/$CERTS_SH_FILE
+[[ -f ${CERTS_SH_DIR}/require.sh ]] && source  ${CERTS_SH_DIR}/require.sh
 
-export BACKUP=${BACKUP:-./backup} && mkdir -p $BACKUP 2>/dev/null
-export CERTS=${CERTS:-./certs} && mkdir -p $CERTS 2>/dev/null
+RES=${RES:=""}             # this should be set by require
+ROOTCA="${RES}rootca.crt"  # this file is required for proper creation of trust CA, if it is not available will be downloaded
+FQDN=${FQDN:-""}           # this should be set by require
 
-SECRET=${CERTS}/secret.yml       # Anaconda Enterprise
-OPS_TLSKP=${CERTS}/ops-tlskp.yml # Gravity OPS Center
+export CMD=${1:-source}
+export CERTS_SRC=${2:-~/conf/certs}
+export KIND=${3:-tf}
+export COMMON_NAME="${4:-$FQDN}"
+
+
+export BACKUP=${BACKUP:-./backup/} && mkdir -p $BACKUP 2>/dev/null
+export CERTS=${CERTS:-./certs/} && mkdir -p $CERTS 2>/dev/null
+
+SECRET=${CERTS}secret.yml       # Anaconda Enterprise
+OPS_TLSKP=${CERTS}ops-tlskp.yml # Gravity OPS Center
 
 get_backup_file_name() {
   source=${1}
@@ -26,20 +38,21 @@ get_backup_file_name() {
 }
 
 handle_args() {
-  export CMD=${1:-source}
-  export KIND=${2:-tf}
-  export COMMON_NAME="${3:-$FQDN}"
-
   if [[ $CMD == "generate" || $CMD == "renew" ]]; then
+     shift;
+     [[ ! -d $CERTS_SRC ]] && echo " must be exported pointing to a fodler with certs or main.tf" && return 1
      if [[ $KIND == "tf" ]]; then
-        if [[ ! -f main.tf ]] || [[ ! $(command -v terraform) ]]; then echo "This needs to be run from tf folder" && return 1; fi
-     elif [[ $KIND == "folder" ]]; then [[ ! -d $CB ]] && echo "CB must be exported with the folder where certs and keys are" && return 1; fi
+        [[ ! -f main.tf ]] &&  echo "ERROR: Can't find main.tf make sure you are in the terraform ssl folder" && return 1
+        [[ ! $(command -v terraform) ]] &&  echo "ERROR: Can't find terraform binary which is needed for this " && return 1
+        [[ -z AWS_SECRET_ACCESS_KEY ]] && echo "ERROR: Please make sure to set AWS_SECRET_ACCESS_KEY" && return 1
+        [[ -z AWS_ACCESS_KEY_ID ]] && echo "ERROR: Please make sure to set AWS_ACCESS_KEY_ID" && return 1
      else echo "$KIND is not supported - Can use certbot or terraform source (folder/tf) only " && return 1
      fi
      [[ ! $(command -v base64) ]] && echo must have base64 for this to work && return 1
      export BASE64_ENC="base64 --wrap=0"
      [[ "$(uname)" == "Darwin" ]] && export BASE64_ENC="base64 -b 0"
   fi 
+  return 0
 }
 
 truncate_file() { # remove any trailing spaces and special charcters
@@ -51,7 +64,7 @@ truncate_file() { # remove any trailing spaces and special charcters
 
 check_cert_expiration() {
   echo checking if certs are already in current folder
-  if [[ -f ${CERTS}/fullchain.pem ]]; then
+  if [[ -f ${CERTS}fullchain.pem ]]; then
     local expire=$(days_to_expiration)
     echo certificate will expire in $expire days
     if [[ $expire -lt 7 ]]; then
@@ -61,24 +74,20 @@ check_cert_expiration() {
 }
 
 get_certs_from_tf() { # get certs using teraform anaconda-etnerprise-ssl module
-     terraform output certificate > ${CERTS}/cert && truncate_file ${CERTS}/cert
-     terraform output intermediate > ${CERTS}/inter && truncate_file ${CERTS}/inter
-     terraform output private_key > ${CERTS}/privkey.pem && truncate_file ${CERTS}/privkey.pem
-     mv ${CERTS}/cert ${CERTS}/fullchain.pem
-     cat ${CERTS}/inter >> ${CERTS}/fullchain.pem && rm ${CERTS}/inter
+     terraform output certificate > ${CERTS}cert && truncate_file ${CERTS}cert
+     terraform output intermediate > ${CERTS}inter && truncate_file ${CERTS}inter
+     terraform output private_key > ${CERTS}privkey.pem && truncate_file ${CERTS}privkey.pem
+     mv ${CERTS}cert ${CERTS}fullchain.pem
+     cat ${CERTS}inter >> ${CERTS}fullchain.pem && rm ${CERTS}inter
      COMMON_NAME=$(terraform output certificate_domain)
-   else
-     echo to get cerificates via teraform you must have terraform installed and run this from the ssl teraform folder
-     return 1
-   fi
 }
 
 get_certs_from_folder() { # assumes source has cert,pem, fulldhcain.pem and privkey.pem - copy to workdir
-   CB=${1:-""} && [[ -z $CB ]] && echo must provide source directory with certs && return 1
+   CB=${1:-""} && [[ -z ${CERTS_SRC} ]] && echo must provide source directory with certs && return 1
    [[ -z $COMMON_NAME ]] && echo "Must ptovide a common name for the certs" && return 1
-   cp $CB/cert.pem ${CERTS}/fullchain.pem
-   cat $CB/fullchain.pem >>  ${CERTS}/fullchain.pem
-   cp $CB/privkey.pem ${CERTS}/privkey.pem
+   cp ${CERTS_SRC}/cert.pem ${CERTS}fullchain.pem
+   cat ${CERTS_SRC}/fullchain.pem >>  ${CERTS}fullchain.pem
+   cp ${CERTS_SRC}/privkey.pem ${CERTS}privkey.pem
 }
 
 prepare_content() { #
@@ -87,34 +96,34 @@ prepare_content() { #
     wget -q https://curl.haxx.se/ca/cacert.pem -O $ROOTCA
     if [[ $? -ne 0 ]]; then echo failed to get rootca exiting && return 1 ; fi
   fi
-  CONTENTS=${CERTS}/contents.yml
+  CONTENTS=${CERTS}contents.yml
 
   # Delete existing keystore, discard error from non-existent keystore
-  keytool -noprompt -delete -alias auth -keystore ${CERTS}/keystore.jks -storepass anaconda 2&> /dev/null
+  keytool -noprompt -delete -alias auth -keystore ${CERTS}keystore.jks -storepass anaconda 2&> /dev/null
 
   # Generate the PKCS12 certs
-  openssl pkcs12 -passout pass:anaconda -export -in ${CERTS}/fullchain.pem -inkey \
-  ${CERTS}/privkey.pem -out ${CERTS}/${COMMON_NAME}.p12 -name auth
+  openssl pkcs12 -passout pass:anaconda -export -in ${CERTS}fullchain.pem -inkey \
+  ${CERTS}privkey.pem -out ${CERTS}${COMMON_NAME}.p12 -name auth
 
   # Generate the keystore
   keytool -noprompt -importkeystore -deststorepass anaconda -destkeypass anaconda -destkeystore \
-  ${CERTS}/keystore.jks -srckeystore ${CERTS}/${COMMON_NAME}.p12 -srcstoretype PKCS12 -srcstorepass anaconda -alias auth
+  ${CERTS}keystore.jks -srckeystore ${CERTS}${COMMON_NAME}.p12 -srcstoretype PKCS12 -srcstorepass anaconda -alias auth
 
   # Generate the contents for both the AE secret and Ops Center secret
   printf "  tls.crt: " > $CONTENTS
-  $BASE64_ENC ${CERTS}/fullchain.pem >> $CONTENTS
+  $BASE64_ENC ${CERTS}fullchain.pem >> $CONTENTS
   printf '\n' >> $CONTENTS
   printf "  tls.key: " >> $CONTENTS
-  $BASE64_ENC ${CERTS}/privkey.pem >> $CONTENTS
+  $BASE64_ENC ${CERTS}privkey.pem >> $CONTENTS
   printf '\n' >> $CONTENTS
   printf "  wildcard.crt: " >> $CONTENTS
-  $BASE64_ENC ${CERTS}/fullchain.pem >> $CONTENTS
+  $BASE64_ENC ${CERTS}fullchain.pem >> $CONTENTS
   printf '\n' >> $CONTENTS
   printf "  wildcard.key: " >> $CONTENTS
-  $BASE64_ENC ${CERTS}/privkey.pem >> $CONTENTS
+  $BASE64_ENC ${CERTS}privkey.pem >> $CONTENTS
   printf '\n' >> $CONTENTS
   printf "  keystore.jks: " >> $CONTENTS
-  $BASE64_ENC ${CERTS}/keystore.jks >> $CONTENTS
+  $BASE64_ENC ${CERTS}keystore.jks >> $CONTENTS
   printf '\n' >> $CONTENTS
   printf "  rootca.crt: " >> $CONTENTS
   $BASE64_ENC $ROOTCA >> $CONTENTS
@@ -135,7 +144,7 @@ EOL
 cat $CONTENTS >> $SECRET
 
 
-crt=$(cat ${CERTS}/fullchain.pem)
+crt=$(cat ${CERTS}fullchain.pem)
 
 cat > $OPS_TLSKP <<EOL
 kind: tlskeypair
@@ -144,9 +153,9 @@ metadata:
   name: keypair
 spec:
   private_key: |
-  `awk '{if (NR>1) print "    "$0; if (NR<=1) print $0}' ${CERTS}/privkey.pem`
+  `awk '{if (NR <= 1 ) { print "  "$0} else {print "    "$0}}' ${CERTS}privkey.pem`
   cert: |
-  `awk '{if (NR>1) print "    "$0; if (NR<=1) print $0}' ${CERTS}/fullchain.pem`
+  `awk '{if (NR <= 1) { print "  "$0} else {print "    "$0}}' ${CERTS}fullchain.pem`
 EOL
 
 }
@@ -187,7 +196,7 @@ backup_certs(){
   kubectl get secrets anaconda-enterprise-certs -o json -n kube-system > $(get_backup_file_name ops-anaconda-enterprise-certs.json)
   gravity resource get tlskeypair --format json > $(get_backup_file_name ops-tlskeypair.json)
   popd
-
+}
 
 replace_certs() {
   backup_certs \
@@ -204,12 +213,27 @@ generate_certs() {
 }
 
 renew_certs() {
+  # call terraform apply &&
   generate_certs $@ &&
   replace_certs 
 }
   
+usage() {
+  echo "$1"
+  echo "$CERTS_SH_FILE generate path [ tf | folder ] [ FQDN ] # generate secret using tf/folder (lets encrypt)"
+  echo "$CERTS_SH_FILE renew path [ tf | folder ]             # same as above but also replace the certs - must be on AE5 master"
+  echo "$CERTS_SH_FILE replace [ path ]                       # backup certs and replace - must be on AE5 master"
+}   
+
 [[ $CMD == replace ]] && replace_certs
 [[ $CMD == generate  ]] && generate_certs $@
 [[ $CMD == renew ]] && renew_certs $@
+[[ $CMD == source ]] && [[ $0 =~ bash ]] && echo sourced $CERTS_SH 
+[[ $CMD == source ]] && [[ ! $0 =~ bash ]] && usage "please source $CERTS_SH or "
 
-set +xue
+# set +xue
+
+# TODO: Add provision for the actual ACME flow
+# setup terraform / certbot 
+# handle aws login for terraform / certbot for the route-53 plugin
+
